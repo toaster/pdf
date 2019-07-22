@@ -14,14 +14,17 @@ type Stack struct {
 	stack []Value
 }
 
+// Len returns the amount of values in this stack.
 func (stk *Stack) Len() int {
 	return len(stk.stack)
 }
 
+// Push puts the given value onto the top of the stack.
 func (stk *Stack) Push(v Value) {
 	stk.stack = append(stk.stack, v)
 }
 
+// Pop removes and returns the value at the top of the stack.
 func (stk *Stack) Pop() Value {
 	n := len(stk.stack)
 	if n == 0 {

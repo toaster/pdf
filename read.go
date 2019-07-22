@@ -173,7 +173,7 @@ func NewReaderEncrypted(f io.ReaderAt, size int64, pw func() string) (*Reader, e
 	if err == nil {
 		return r, nil
 	}
-	if pw == nil || err != ErrInvalidPassword {
+	if pw == nil || err != errInvalidPassword {
 		return nil, err
 	}
 	for {
@@ -757,7 +757,6 @@ func (r *Reader) resolve(parent objptr, x interface{}) Value {
 			def, ok := obj.(objdef)
 			if !ok {
 				panic(fmt.Errorf("loading %v: found %T instead of objdef", ptr, obj))
-				return Value{}
 			}
 			if def.ptr != ptr {
 				panic(fmt.Errorf("loading %v: found %v", ptr, def.ptr))
@@ -989,7 +988,7 @@ func (r *Reader) initEncrypt(password string) error {
 	}
 
 	if !bytes.HasPrefix([]byte(U), u) {
-		return ErrInvalidPassword
+		return errInvalidPassword
 	}
 
 	r.key = key
@@ -998,7 +997,7 @@ func (r *Reader) initEncrypt(password string) error {
 	return nil
 }
 
-var ErrInvalidPassword = fmt.Errorf("encrypted PDF: invalid password")
+var errInvalidPassword = fmt.Errorf("encrypted PDF: invalid password")
 
 func okayV4(encrypt dict) bool {
 	cf, ok := encrypt["CF"].(dict)
@@ -1065,7 +1064,7 @@ func decryptStream(key []byte, useAES bool, ptr objptr, rd io.Reader) io.Reader 
 		rd = &cbcReader{cbc: cbc, rd: rd, buf: make([]byte, 16)}
 	} else {
 		c, _ := rc4.NewCipher(key)
-		rd = &cipher.StreamReader{c, rd}
+		rd = &cipher.StreamReader{S: c, R: rd}
 	}
 	return rd
 }

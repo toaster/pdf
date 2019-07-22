@@ -69,9 +69,6 @@ func main() {
 	}
 	_, err = pdf.NewReaderEncrypted(f, st.Size(), pw)
 	if err != nil {
-		if err == pdf.ErrInvalidPassword {
-			log.Fatal("password not found")
-		}
 		log.Fatal("reading pdf: %v", err)
 	}
 	fmt.Printf("password: %q\n", last)
