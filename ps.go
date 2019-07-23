@@ -5,6 +5,7 @@
 package pdf
 
 import (
+	"errors"
 	"fmt"
 	"io"
 )
@@ -54,8 +55,11 @@ func newDict() Value {
 //
 // There is no support for executable blocks, among other limitations.
 //
-func Interpret(strm Value, do func(stk *Stack, op string)) {
-	rd := strm.Reader()
+func Interpret(strm Value, do func(stk *Stack, op string) (bool, error)) error {
+	rd, err := strm.Reader()
+	if err != nil {
+		return err
+	}
 	b := newBuffer(rd, 0)
 	b.allowEOF = true
 	b.allowObjptr = false
@@ -64,7 +68,10 @@ func Interpret(strm Value, do func(stk *Stack, op string)) {
 	var dicts []dict
 Reading:
 	for {
-		tok := b.readToken()
+		tok, err := b.readToken()
+		if err != nil {
+			return err
+		}
 		if tok == io.EOF {
 			break
 		}
@@ -79,7 +86,13 @@ Reading:
 						continue Reading
 					}
 				}
-				do(&stk, string(kw))
+				cont, err := do(&stk, string(kw))
+				if err != nil {
+					return err
+				}
+				if !cont {
+					return nil
+				}
 				continue
 			case "dict":
 				stk.Pop()
@@ -87,31 +100,31 @@ Reading:
 				continue
 			case "currentdict":
 				if len(dicts) == 0 {
-					panic("no current dictionary")
+					return errors.New("no current dictionary")
 				}
 				stk.Push(Value{nil, objptr{}, dicts[len(dicts)-1]})
 				continue
 			case "begin":
 				d := stk.Pop()
 				if d.Kind() != Dict {
-					panic("cannot begin non-dict")
+					return errors.New("cannot begin non-dict")
 				}
 				dicts = append(dicts, d.data.(dict))
 				continue
 			case "end":
 				if len(dicts) <= 0 {
-					panic("mismatched begin/end")
+					return errors.New("mismatched begin/end")
 				}
 				dicts = dicts[:len(dicts)-1]
 				continue
 			case "def":
 				if len(dicts) <= 0 {
-					panic("def without open dict")
+					return errors.New("def without open dict")
 				}
 				val := stk.Pop()
 				key, ok := stk.Pop().data.(name)
 				if !ok {
-					panic("def of non-name")
+					return errors.New("def of non-name")
 				}
 				dicts[len(dicts)-1][key] = val.data
 				continue
@@ -121,9 +134,13 @@ Reading:
 			}
 		}
 		b.unreadToken(tok)
-		obj := b.readObject()
+		obj, err := b.readObject()
+		if err != nil {
+			return err
+		}
 		stk.Push(Value{nil, objptr{}, obj})
 	}
+	return nil
 }
 
 type seqReader struct {

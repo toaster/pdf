@@ -21,20 +21,52 @@ type Page struct {
 // Page returns the page for the given page number.
 // Page numbers are indexed starting at 1, not 0.
 // If the page is not found, Page returns a Page with p.V.IsNull().
-func (r *Reader) Page(num int) Page {
+func (r *Reader) Page(num int) (Page, error) {
 	num-- // now 0-indexed
-	page := r.Trailer().Key("Root").Key("Pages")
+	root, err := r.Trailer().Key("Root")
+	if err != nil {
+		return Page{}, err
+	}
+	page, err := root.Key("Pages")
+	if err != nil {
+		return Page{}, err
+	}
 Search:
-	for page.Key("Type").Name() == "Pages" {
-		count := int(page.Key("Count").Int64())
-		if count < num {
-			return Page{}
+	for {
+		t, err := page.Key("Type")
+		if err != nil {
+			return Page{}, err
 		}
-		kids := page.Key("Kids")
+		if t.Name() != "Pages" {
+			break
+		}
+		c, err := page.Key("Count")
+		if err != nil {
+			return Page{}, err
+		}
+		count := int(c.Int64())
+		if count < num {
+			return Page{}, nil
+		}
+		kids, err := page.Key("Kids")
+		if err != nil {
+			return Page{}, err
+		}
 		for i := 0; i < kids.Len(); i++ {
-			kid := kids.Index(i)
-			if kid.Key("Type").Name() == "Pages" {
-				c := int(kid.Key("Count").Int64())
+			kid, err := kids.Index(i)
+			if err != nil {
+				return Page{}, err
+			}
+			t, err := kid.Key("Type")
+			if err != nil {
+				return Page{}, err
+			}
+			if t.Name() == "Pages" {
+				v, err := kid.Key("Count")
+				if err != nil {
+					return Page{}, err
+				}
+				c := int(v.Int64())
 				if num < c {
 					page = kid
 					continue Search
@@ -42,32 +74,57 @@ Search:
 				num -= c
 				continue
 			}
-			if kid.Key("Type").Name() == "Page" {
+			if t.Name() == "Page" {
 				if num == 0 {
-					return Page{kid}
+					return Page{kid}, nil
 				}
 				num--
 			}
 		}
 	}
-	return Page{}
+	return Page{}, nil
 }
 
 // NumPage returns the number of pages in the PDF file.
-func (r *Reader) NumPage() int {
-	return int(r.Trailer().Key("Root").Key("Pages").Key("Count").Int64())
+func (r *Reader) NumPage() (int, error) {
+	v, err := r.Trailer().Key("Root")
+	if err != nil {
+		return 0, err
+	}
+	p, err := v.Key("Pages")
+	if err != nil {
+		return 0, err
+	}
+	c, err := p.Key("Count")
+	if err != nil {
+		return 0, err
+	}
+	return int(c.Int64()), nil
 }
 
 // GetPlainText returns all the text in the PDF file
 func (r *Reader) GetPlainText() (reader io.Reader, err error) {
-	pages := r.NumPage()
+	pages, err := r.NumPage()
+	if err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	fonts := make(map[string]*Font)
 	for i := 1; i <= pages; i++ {
-		p := r.Page(i)
-		for _, name := range p.Fonts() { // cache fonts so we don't continually parse charmap
+		p, err := r.Page(i)
+		if err != nil {
+			return nil, err
+		}
+		f, err := p.Fonts()
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range f { // cache fonts so we don't continually parse charmap
 			if _, ok := fonts[name]; !ok {
-				f := p.Font(name)
+				f, err := p.Font(name)
+				if err != nil {
+					return nil, err
+				}
 				fonts[name] = &f
 			}
 		}
@@ -80,13 +137,21 @@ func (r *Reader) GetPlainText() (reader io.Reader, err error) {
 	return &buf, nil
 }
 
-func (p Page) findInherited(key string) Value {
-	for v := p.V; !v.IsNull(); v = v.Key("Parent") {
-		if r := v.Key(key); !r.IsNull() {
-			return r
+func (p Page) findInherited(key string) (Value, error) {
+	var err error
+	for v := p.V; !v.IsNull(); v, err = v.Key("Parent") {
+		if err != nil {
+			return Value{}, err
+		}
+		r, err := v.Key(key)
+		if err != nil {
+			return Value{}, err
+		}
+		if !r.IsNull() {
+			return r, nil
 		}
 	}
-	return Value{}
+	return Value{}, nil
 }
 
 /*
@@ -100,18 +165,38 @@ func (p Page) CropBox() Value {
 */
 
 // Resources returns the resources dictionary associated with the page.
-func (p Page) Resources() Value {
+func (p Page) Resources() (Value, error) {
 	return p.findInherited("Resources")
 }
 
 // Fonts returns a list of the fonts associated with the page.
-func (p Page) Fonts() []string {
-	return p.Resources().Key("Font").Keys()
+func (p Page) Fonts() ([]string, error) {
+	r, err := p.Resources()
+	if err != nil {
+		return nil, err
+	}
+	f, err := r.Key("Font")
+	if err != nil {
+		return nil, err
+	}
+	return f.Keys(), nil
 }
 
 // Font returns the font with the given name associated with the page.
-func (p Page) Font(name string) Font {
-	return Font{p.Resources().Key("Font").Key(name), nil}
+func (p Page) Font(name string) (Font, error) {
+	r, err := p.Resources()
+	if err != nil {
+		return Font{}, err
+	}
+	f, err := r.Key("Font")
+	if err != nil {
+		return Font{}, err
+	}
+	n, err := f.Key(name)
+	if err != nil {
+		return Font{}, err
+	}
+	return Font{n, nil}, nil
 }
 
 // A Font represent a font in a PDF file.
@@ -122,98 +207,148 @@ type Font struct {
 }
 
 // BaseFont returns the font's name (BaseFont property).
-func (f Font) BaseFont() string {
-	return f.V.Key("BaseFont").Name()
+func (f Font) BaseFont() (string, error) {
+	b, err := f.V.Key("BaseFont")
+	if err != nil {
+		return "", err
+	}
+	return b.Name(), err
 }
 
 // FirstChar returns the code point of the first character in the font.
-func (f Font) FirstChar() int {
-	return int(f.V.Key("FirstChar").Int64())
+func (f Font) FirstChar() (int, error) {
+	c, err := f.V.Key("FirstChar")
+	if err != nil {
+		return 0, err
+	}
+	return int(c.Int64()), nil
 }
 
 // LastChar returns the code point of the last character in the font.
-func (f Font) LastChar() int {
-	return int(f.V.Key("LastChar").Int64())
+func (f Font) LastChar() (int, error) {
+	c, err := f.V.Key("LastChar")
+	if err != nil {
+		return 0, err
+	}
+	return int(c.Int64()), nil
 }
 
 // Widths returns the widths of the glyphs in the font.
 // In a well-formed PDF, len(f.Widths()) == f.LastChar()+1 - f.FirstChar().
-func (f Font) Widths() []float64 {
-	x := f.V.Key("Widths")
+func (f Font) Widths() ([]float64, error) {
+	x, err := f.V.Key("Widths")
+	if err != nil {
+		return nil, err
+	}
 	var out []float64
 	for i := 0; i < x.Len(); i++ {
-		out = append(out, x.Index(i).Float64())
+		ix, err := x.Index(i)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ix.Float64())
 	}
-	return out
+	return out, nil
 }
 
 // Width returns the width of the given code point.
-func (f Font) Width(code int) float64 {
-	first := f.FirstChar()
-	last := f.LastChar()
-	if code < first || last < code {
-		return 0
+func (f Font) Width(code int) (float64, error) {
+	first, err := f.FirstChar()
+	if err != nil {
+		return 0, err
 	}
-	return f.V.Key("Widths").Index(code - first).Float64()
+	last, err := f.LastChar()
+	if err != nil {
+		return 0, err
+	}
+	if code < first || last < code {
+		return 0, nil
+	}
+	w, err := f.V.Key("Widths")
+	if err != nil {
+		return 0, err
+	}
+	i, err := w.Index(code - first)
+	if err != nil {
+		return 0, err
+	}
+	return i.Float64(), nil
 }
 
 // Encoder returns the encoding between font code point sequences and UTF-8.
-func (f Font) Encoder() TextEncoding {
+func (f Font) Encoder() (enc TextEncoding, err error) {
 	if f.enc == nil { // caching the Encoder so we don't have to continually parse charmap
-		f.enc = f.getEncoder()
+		f.enc, err = f.getEncoder()
 	}
-	return f.enc
+	enc = f.enc
+	return
 }
 
-func (f Font) getEncoder() TextEncoding {
-	enc := f.V.Key("Encoding")
+func (f Font) getEncoder() (TextEncoding, error) {
+	enc, err := f.V.Key("Encoding")
+	if err != nil {
+		return nil, err
+	}
 	switch enc.Kind() {
 	case Name:
 		switch enc.Name() {
 		case "WinAnsiEncoding":
-			return &byteEncoder{&winAnsiEncoding}
+			return &byteEncoder{&winAnsiEncoding}, nil
 		case "MacRomanEncoding":
-			return &byteEncoder{&macRomanEncoding}
+			return &byteEncoder{&macRomanEncoding}, nil
 		case "Identity-H":
 			return f.charmapEncoding()
 		default:
 			println("unknown encoding", enc.Name())
-			return &nopEncoder{}
+			return &nopEncoder{}, nil
 		}
 	case Dict:
-		return &dictEncoder{enc.Key("Differences")}
+		d, err := enc.Key("Differences")
+		if err != nil {
+			return nil, err
+		}
+		return &dictEncoder{d}, nil
 	case Null:
 		return f.charmapEncoding()
 	default:
 		println("unexpected encoding", enc.String())
-		return &nopEncoder{}
+		return &nopEncoder{}, nil
 	}
 }
 
-func (f *Font) charmapEncoding() TextEncoding {
-	toUnicode := f.V.Key("ToUnicode")
+func (f *Font) charmapEncoding() (TextEncoding, error) {
+	toUnicode, err := f.V.Key("ToUnicode")
+	if err != nil {
+		return nil, err
+	}
 	if toUnicode.Kind() == Stream {
-		m := readCmap(toUnicode)
-		if m == nil {
-			return &nopEncoder{}
+		m, err := readCmap(toUnicode)
+		if err != nil {
+			return nil, err
 		}
-		return m
+		if m == nil {
+			return &nopEncoder{}, nil
+		}
+		return m, nil
 	}
 
-	return &byteEncoder{&pdfDocEncoding}
+	return &byteEncoder{&pdfDocEncoding}, nil
 }
 
 type dictEncoder struct {
 	v Value
 }
 
-func (e *dictEncoder) Decode(raw string) (text string) {
+func (e *dictEncoder) Decode(raw string) (string, error) {
 	r := make([]rune, 0, len(raw))
 	for i := 0; i < len(raw); i++ {
 		ch := rune(raw[i])
 		n := -1
 		for j := 0; j < e.v.Len(); j++ {
-			x := e.v.Index(j)
+			x, err := e.v.Index(j)
+			if err != nil {
+				return "", err
+			}
 			if x.Kind() == Integer {
 				n = int(x.Int64())
 				continue
@@ -231,7 +366,7 @@ func (e *dictEncoder) Decode(raw string) (text string) {
 		}
 		r = append(r, ch)
 	}
-	return string(r)
+	return string(r), nil
 }
 
 // A TextEncoding represents a mapping between
@@ -239,26 +374,26 @@ func (e *dictEncoder) Decode(raw string) (text string) {
 type TextEncoding interface {
 	// Decode returns the UTF-8 text corresponding to
 	// the sequence of code points in raw.
-	Decode(raw string) (text string)
+	Decode(raw string) (string, error)
 }
 
 type nopEncoder struct {
 }
 
-func (e *nopEncoder) Decode(raw string) (text string) {
-	return raw
+func (e *nopEncoder) Decode(raw string) (string, error) {
+	return raw, nil
 }
 
 type byteEncoder struct {
 	table *[256]rune
 }
 
-func (e *byteEncoder) Decode(raw string) (text string) {
+func (e *byteEncoder) Decode(raw string) (string, error) {
 	r := make([]rune, 0, len(raw))
 	for i := 0; i < len(raw); i++ {
 		r = append(r, e.table[raw[i]])
 	}
-	return string(r)
+	return string(r), nil
 }
 
 type byteRange struct {
@@ -283,7 +418,7 @@ type cmap struct {
 	bfchar  []bfchar
 }
 
-func (m *cmap) Decode(raw string) (text string) {
+func (m *cmap) Decode(raw string) (string, error) {
 	var r []rune
 Parse:
 	for len(raw) > 0 {
@@ -312,7 +447,10 @@ Parse:
 							}
 							if bfrange.dst.Kind() == Array {
 								n := text[len(text)-1] - bfrange.lo[len(bfrange.lo)-1]
-								v := bfrange.dst.Index(int(n))
+								v, err := bfrange.dst.Index(int(n))
+								if err != nil {
+									return "", err
+								}
 								if v.Kind() == String {
 									s := v.RawString()
 									r = append(r, []rune(utf16Decode(s))...)
@@ -335,17 +473,13 @@ Parse:
 		r = append(r, noRune)
 		raw = raw[1:]
 	}
-	return string(r)
+	return string(r), nil
 }
 
-func readCmap(toUnicode Value) *cmap {
+func readCmap(toUnicode Value) (*cmap, error) {
 	n := -1
 	var m cmap
-	ok := true
-	Interpret(toUnicode, func(stk *Stack, op string) {
-		if !ok {
-			return
-		}
+	err := Interpret(toUnicode, func(stk *Stack, op string) (bool, error) {
 		switch op {
 		case "findresource":
 			stk.Pop() // category
@@ -360,15 +494,13 @@ func readCmap(toUnicode Value) *cmap {
 		case "endcodespacerange":
 			if n < 0 {
 				println("missing begincodespacerange")
-				ok = false
-				return
+				return false, nil
 			}
 			for i := 0; i < n; i++ {
 				hi, lo := stk.Pop().RawString(), stk.Pop().RawString()
 				if len(lo) == 0 || len(lo) != len(hi) {
 					println("bad codespace range")
-					ok = false
-					return
+					return false, nil
 				}
 				m.space[len(lo)-1] = append(m.space[len(lo)-1], byteRange{lo, hi})
 			}
@@ -377,7 +509,7 @@ func readCmap(toUnicode Value) *cmap {
 			n = int(stk.Pop().Int64())
 		case "endbfchar":
 			if n < 0 {
-				panic("missing beginbfchar")
+				return false, errors.New("missing beginbfchar")
 			}
 			for i := 0; i < n; i++ {
 				repl, orig := stk.Pop().RawString(), stk.Pop().RawString()
@@ -387,7 +519,7 @@ func readCmap(toUnicode Value) *cmap {
 			n = int(stk.Pop().Int64())
 		case "endbfrange":
 			if n < 0 {
-				panic("missing beginbfrange")
+				return false, errors.New("missing beginbfrange")
 			}
 			for i := 0; i < n; i++ {
 				dst, srcHi, srcLo := stk.Pop(), stk.Pop().RawString(), stk.Pop().RawString()
@@ -402,11 +534,12 @@ func readCmap(toUnicode Value) *cmap {
 			// TODO
 			// println("interp\t", op)
 		}
+		return true, nil
 	})
-	if !ok {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return &m
+	return &m, err
 }
 
 type matrix [3][3]float64
@@ -477,28 +610,43 @@ func (p Page) GetPlainText(fonts map[string]*Font) (result string, err error) {
 		}
 	}()
 
-	strm := p.V.Key("Contents")
+	strm, err := p.V.Key("Contents")
+	if err != nil {
+		return "", err
+	}
 	var enc TextEncoding = &nopEncoder{}
 
 	if fonts == nil {
 		fonts = make(map[string]*Font)
-		for _, font := range p.Fonts() {
-			f := p.Font(font)
+		fs, err := p.Fonts()
+		if err != nil {
+			return "", err
+		}
+		for _, font := range fs {
+			f, err := p.Font(font)
+			if err != nil {
+				return "", err
+			}
 			fonts[font] = &f
 		}
 	}
 
 	var textBuilder bytes.Buffer
-	showText := func(s string) {
-		for _, ch := range enc.Decode(s) {
+	showText := func(s string) error {
+		d, err := enc.Decode(s)
+		if err != nil {
+			return err
+		}
+		for _, ch := range d {
 			_, err := textBuilder.WriteRune(ch)
 			if err != nil {
-				panic(err)
+				return err
 			}
 		}
+		return nil
 	}
 
-	Interpret(strm, func(stk *Stack, op string) {
+	err = Interpret(strm, func(stk *Stack, op string) (bool, error) {
 		n := stk.Len()
 		args := make([]Value, n)
 		for i := n - 1; i >= 0; i-- {
@@ -506,50 +654,61 @@ func (p Page) GetPlainText(fonts map[string]*Font) (result string, err error) {
 		}
 
 		switch op {
-		default:
-			return
 		case "T*": // move to start of next line
 			showText("\n")
 		case "Tf": // set text font and size
 			if len(args) != 2 {
-				panic("bad TL")
+				return false, errors.New("bad TL")
 			}
 			if font, ok := fonts[args[0].Name()]; ok {
-				enc = font.Encoder()
+				enc, err = font.Encoder()
+				if err != nil {
+					return false, err
+				}
 			} else {
 				enc = &nopEncoder{}
 			}
 		case "\"": // set spacing, move to next line, and show text
 			if len(args) != 3 {
-				panic("bad \" operator")
+				return false, errors.New("bad \" operator")
 			}
 			fallthrough
 		case "'": // move to next line and show text
 			if len(args) != 1 {
-				panic("bad ' operator")
+				return false, errors.New("bad ' operator")
 			}
 			fallthrough
 		case "Tj": // show text
 			if len(args) != 1 {
-				panic("bad Tj operator")
+				return false, errors.New("bad Tj operator")
 			}
 			showText(args[0].RawString())
 		case "TJ": // show text, allowing individual glyph positioning
 			v := args[0]
 			for i := 0; i < v.Len(); i++ {
-				x := v.Index(i)
+				x, err := v.Index(i)
+				if err != nil {
+					return false, err
+				}
 				if x.Kind() == String {
 					showText(x.RawString())
 				}
 			}
 		}
+		return true, nil
 	})
+	if err != nil {
+		return "", err
+	}
 	return textBuilder.String(), nil
 }
 
 // Content returns the page's content.
-func (p Page) Content() Content {
-	strm := p.V.Key("Contents")
+func (p Page) Content() (Content, error) {
+	strm, err := p.V.Key("Contents")
+	if err != nil {
+		return Content{}, err
+	}
 	var enc TextEncoding = &nopEncoder{}
 
 	var g = gstate{
@@ -558,17 +717,26 @@ func (p Page) Content() Content {
 	}
 
 	var text []Text
-	showText := func(s string) {
+	showText := func(s string) error {
 		n := 0
-		decoded := enc.Decode(s)
+		decoded, err := enc.Decode(s)
+		if err != nil {
+			return err
+		}
 		for _, ch := range decoded {
 			var w0 float64
 			if n < len(s) {
-				w0 = g.Tf.Width(int(s[n]))
+				w0, err = g.Tf.Width(int(s[n]))
+				if err != nil {
+					return err
+				}
 			}
 			n++
 
-			f := g.Tf.BaseFont()
+			f, err := g.Tf.BaseFont()
+			if err != nil {
+				return err
+			}
 			if i := strings.Index(f, "+"); i >= 0 {
 				f = f[i+1:]
 			}
@@ -580,24 +748,21 @@ func (p Page) Content() Content {
 			tx *= g.Th
 			g.Tm = matrix{{1, 0, 0}, {0, 1, 0}, {tx, 0, 1}}.mul(g.Tm)
 		}
+		return nil
 	}
 
 	var rect []Rect
 	var gstack []gstate
-	Interpret(strm, func(stk *Stack, op string) {
+	Interpret(strm, func(stk *Stack, op string) (bool, error) {
 		n := stk.Len()
 		args := make([]Value, n)
 		for i := n - 1; i >= 0; i-- {
 			args[i] = stk.Pop()
 		}
 		switch op {
-		default:
-			//fmt.Println(op, args)
-			return
-
 		case "cm": // update g.CTM
 			if len(args) != 6 {
-				panic("bad g.Tm")
+				return false, errors.New("bad g.Tm")
 			}
 			var m matrix
 			for i := 0; i < 6; i++ {
@@ -607,8 +772,22 @@ func (p Page) Content() Content {
 			g.CTM = m.mul(g.CTM)
 
 		case "gs": // set parameters from graphics state resource
-			gs := p.Resources().Key("ExtGState").Key(args[0].Name())
-			font := gs.Key("Font")
+			r, err := p.Resources()
+			if err != nil {
+				return false, err
+			}
+			egs, err := r.Key("ExtGState")
+			if err != nil {
+				return false, err
+			}
+			gs, err := egs.Key(args[0].Name())
+			if err != nil {
+				return false, err
+			}
+			font, err := gs.Key("Font")
+			if err != nil {
+				return false, err
+			}
 			if font.Kind() == Array && font.Len() == 2 {
 				//fmt.Println("FONT", font)
 			}
@@ -623,7 +802,7 @@ func (p Page) Content() Content {
 
 		case "re": // append rectangle to path
 			if len(args) != 4 {
-				panic("bad re")
+				return false, errors.New("bad re")
 			}
 			x, y, w, h := args[0].Float64(), args[1].Float64(), args[2].Float64(), args[3].Float64()
 			rect = append(rect, Rect{Point{x, y}, Point{x + w, y + h}})
@@ -649,19 +828,19 @@ func (p Page) Content() Content {
 
 		case "Tc": // set character spacing
 			if len(args) != 1 {
-				panic("bad g.Tc")
+				return false, errors.New("bad g.Tc")
 			}
 			g.Tc = args[0].Float64()
 
 		case "TD": // move text position and set leading
 			if len(args) != 2 {
-				panic("bad Td")
+				return false, errors.New("bad Td")
 			}
 			g.Tl = -args[1].Float64()
 			fallthrough
 		case "Td": // move text position
 			if len(args) != 2 {
-				panic("bad Td")
+				return false, errors.New("bad Td")
 			}
 			tx := args[0].Float64()
 			ty := args[1].Float64()
@@ -671,11 +850,17 @@ func (p Page) Content() Content {
 
 		case "Tf": // set text font and size
 			if len(args) != 2 {
-				panic("bad TL")
+				return false, errors.New("bad TL")
 			}
 			f := args[0].Name()
-			g.Tf = p.Font(f)
-			enc = g.Tf.Encoder()
+			g.Tf, err = p.Font(f)
+			if err != nil {
+				return false, err
+			}
+			enc, err = g.Tf.Encoder()
+			if err != nil {
+				return false, err
+			}
 			if enc == nil {
 				println("no cmap for", f)
 				enc = &nopEncoder{}
@@ -684,7 +869,7 @@ func (p Page) Content() Content {
 
 		case "\"": // set spacing, move to next line, and show text
 			if len(args) != 3 {
-				panic("bad \" operator")
+				return false, errors.New("bad \" operator")
 			}
 			g.Tw = args[0].Float64()
 			g.Tc = args[1].Float64()
@@ -692,7 +877,7 @@ func (p Page) Content() Content {
 			fallthrough
 		case "'": // move to next line and show text
 			if len(args) != 1 {
-				panic("bad ' operator")
+				return false, errors.New("bad ' operator")
 			}
 			x := matrix{{1, 0, 0}, {0, 1, 0}, {0, -g.Tl, 1}}
 			g.Tlm = x.mul(g.Tlm)
@@ -700,14 +885,17 @@ func (p Page) Content() Content {
 			fallthrough
 		case "Tj": // show text
 			if len(args) != 1 {
-				panic("bad Tj operator")
+				return false, errors.New("bad Tj operator")
 			}
 			showText(args[0].RawString())
 
 		case "TJ": // show text, allowing individual glyph positioning
 			v := args[0]
 			for i := 0; i < v.Len(); i++ {
-				x := v.Index(i)
+				x, err := v.Index(i)
+				if err != nil {
+					return false, err
+				}
 				if x.Kind() == String {
 					showText(x.RawString())
 				} else {
@@ -719,13 +907,13 @@ func (p Page) Content() Content {
 
 		case "TL": // set text leading
 			if len(args) != 1 {
-				panic("bad TL")
+				return false, errors.New("bad TL")
 			}
 			g.Tl = args[0].Float64()
 
 		case "Tm": // set text matrix and line matrix
 			if len(args) != 6 {
-				panic("bad g.Tm")
+				return false, errors.New("bad g.Tm")
 			}
 			var m matrix
 			for i := 0; i < 6; i++ {
@@ -737,30 +925,33 @@ func (p Page) Content() Content {
 
 		case "Tr": // set text rendering mode
 			if len(args) != 1 {
-				panic("bad Tr")
+				return false, errors.New("bad Tr")
 			}
 			g.Tmode = int(args[0].Int64())
 
 		case "Ts": // set text rise
 			if len(args) != 1 {
-				panic("bad Ts")
+				return false, errors.New("bad Ts")
 			}
 			g.Trise = args[0].Float64()
 
 		case "Tw": // set word spacing
 			if len(args) != 1 {
-				panic("bad g.Tw")
+				return false, errors.New("bad g.Tw")
 			}
 			g.Tw = args[0].Float64()
 
 		case "Tz": // set horizontal text scaling
 			if len(args) != 1 {
-				panic("bad Tz")
+				return false, errors.New("bad Tz")
 			}
 			g.Th = args[0].Float64() / 100
+		default:
+			//fmt.Println(op, args)
 		}
+		return true, nil
 	})
-	return Content{text, rect}
+	return Content{text, rect}, nil
 }
 
 // TextVertical implements sort.Interface for sorting
@@ -801,15 +992,35 @@ type Outline struct {
 // Outline returns the document outline.
 // The Outline returned is the root of the outline tree and typically has no Title itself.
 // That is, the children of the returned root are the top-level entries in the outline.
-func (r *Reader) Outline() Outline {
-	return buildOutline(r.Trailer().Key("Root").Key("Outlines"))
+func (r *Reader) Outline() (Outline, error) {
+	rt, err := r.Trailer().Key("Root")
+	if err != nil {
+		return Outline{}, err
+	}
+	o, err := rt.Key("Outlines")
+	if err != nil {
+		return Outline{}, err
+	}
+	return buildOutline(o)
 }
 
-func buildOutline(entry Value) Outline {
+func buildOutline(entry Value) (Outline, error) {
 	var x Outline
-	x.Title = entry.Key("Title").Text()
-	for child := entry.Key("First"); child.Kind() == Dict; child = child.Key("Next") {
-		x.Child = append(x.Child, buildOutline(child))
+	t, err := entry.Key("Title")
+	if err != nil {
+		return Outline{}, err
 	}
-	return x
+	x.Title = t.Text()
+	var child Value
+	for child, err = entry.Key("First"); err != nil && child.Kind() == Dict; child, err = child.Key("Next") {
+		co, e := buildOutline(child)
+		if e != nil {
+			return Outline{}, e
+		}
+		x.Child = append(x.Child, co)
+	}
+	if err != nil {
+		return Outline{}, err
+	}
+	return x, nil
 }
