@@ -69,7 +69,7 @@ func main() {
 	}
 	_, err = pdf.NewReaderEncrypted(f, st.Size(), pw)
 	if err != nil {
-		log.Fatal("reading pdf: %v", err)
+		log.Fatalf("reading pdf: %v", err)
 	}
 	fmt.Printf("password: %q\n", last)
 }
