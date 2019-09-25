@@ -66,19 +66,21 @@ func (b *buffer) seek(offset int64) {
 	b.unread = b.unread[:0]
 }
 
-func (b *buffer) readByte() byte {
+func (b *buffer) readByte() (byte, error) {
 	if b.pos >= len(b.buf) {
-		b.reload()
-		if b.pos >= len(b.buf) {
-			return '\n'
+		if err := b.reload(); err != nil {
+			return 0, err
 		}
 	}
 	c := b.buf[b.pos]
 	b.pos++
-	return c
+	return c, nil
 }
 
-func (b *buffer) reload() (bool, error) {
+func (b *buffer) reload() error {
+	if b.eof {
+		return io.EOF
+	}
 	n := cap(b.buf) - int(b.offset%int64(cap(b.buf)))
 	n, err := b.r.Read(b.buf[:n])
 	if n == 0 && err != nil {
@@ -86,24 +88,24 @@ func (b *buffer) reload() (bool, error) {
 		b.pos = 0
 		if b.allowEOF && err == io.EOF {
 			b.eof = true
-			return false, nil
+			return io.EOF
 		}
-		return false, fmt.Errorf("malformed PDF: reading at offset %d: %v", b.offset, err)
+		return fmt.Errorf("malformed PDF: reading at offset %d: %v", b.offset, err)
 	}
 	b.offset += int64(n)
 	b.buf = b.buf[:n]
 	b.pos = 0
-	return true, nil
+	return nil
 }
 
 func (b *buffer) seekForward(offset int64) error {
 	for b.offset < offset {
-		ok, err := b.reload()
+		err := b.reload()
+		if err == io.EOF {
+			return nil
+		}
 		if err != nil {
 			return err
-		}
-		if !ok {
-			return nil
 		}
 	}
 	b.pos = len(b.buf) - int(b.offset-offset)
@@ -132,16 +134,31 @@ func (b *buffer) readToken() (token, error) {
 	}
 
 	// Find first non-space, non-comment byte.
-	c := b.readByte()
+	c, err := b.readByte()
+	if err == io.EOF {
+		return io.EOF, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	for {
 		if isSpace(c) {
-			if b.eof {
+			c, err = b.readByte()
+			if err == io.EOF {
 				return io.EOF, nil
 			}
-			c = b.readByte()
+			if err != nil {
+				return nil, err
+			}
 		} else if c == '%' {
 			for c != '\r' && c != '\n' {
-				c = b.readByte()
+				c, err = b.readByte()
+				if err == io.EOF {
+					return io.EOF, nil
+				}
+				if err != nil {
+					return nil, err
+				}
 			}
 		} else {
 			break
@@ -150,7 +167,14 @@ func (b *buffer) readToken() (token, error) {
 
 	switch c {
 	case '<':
-		if b.readByte() == '<' {
+		next, err := b.readByte()
+		if err == io.EOF {
+			return io.EOF, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if next == '<' {
 			return keyword("<<"), nil
 		}
 		b.unreadByte()
@@ -166,7 +190,14 @@ func (b *buffer) readToken() (token, error) {
 		return b.readName()
 
 	case '>':
-		if b.readByte() == '>' {
+		next, err := b.readByte()
+		if err == io.EOF {
+			return io.EOF, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if next == '>' {
 			return keyword(">>"), nil
 		}
 		b.unreadByte()
@@ -185,7 +216,13 @@ func (b *buffer) readHexString() (token, error) {
 	tmp := b.tmp[:0]
 	for {
 	Loop:
-		c := b.readByte()
+		c, err := b.readByte()
+		if err == io.EOF {
+			return io.EOF, nil
+		}
+		if err != nil {
+			return nil, err
+		}
 		if c == '>' {
 			break
 		}
@@ -193,7 +230,13 @@ func (b *buffer) readHexString() (token, error) {
 			goto Loop
 		}
 	Loop2:
-		c2 := b.readByte()
+		c2, err := b.readByte()
+		if err == io.EOF {
+			return io.EOF, nil
+		}
+		if err != nil {
+			return nil, err
+		}
 		if isSpace(c2) {
 			goto Loop2
 		}
@@ -224,7 +267,13 @@ func (b *buffer) readLiteralString() (token, error) {
 	depth := 1
 Loop:
 	for {
-		c := b.readByte()
+		c, err := b.readByte()
+		if err == io.EOF {
+			break Loop
+		}
+		if err != nil {
+			return nil, err
+		}
 		switch c {
 		default:
 			tmp = append(tmp, c)
@@ -237,7 +286,14 @@ Loop:
 			}
 			tmp = append(tmp, c)
 		case '\\':
-			switch c = b.readByte(); c {
+			c, err := b.readByte()
+			if err == io.EOF {
+				break Loop
+			}
+			if err != nil {
+				return nil, err
+			}
+			switch c {
 			default:
 				return nil, fmt.Errorf("invalid escape sequence \\%c", c)
 				// is this suitable?
@@ -255,7 +311,14 @@ Loop:
 			case '(', ')', '\\':
 				tmp = append(tmp, c)
 			case '\r':
-				if b.readByte() != '\n' {
+				next, err := b.readByte()
+				if err == io.EOF {
+					break Loop
+				}
+				if err != nil {
+					return nil, err
+				}
+				if next != '\n' {
 					b.unreadByte()
 				}
 				fallthrough
@@ -264,7 +327,13 @@ Loop:
 			case '0', '1', '2', '3', '4', '5', '6', '7':
 				x := int(c - '0')
 				for i := 0; i < 2; i++ {
-					c = b.readByte()
+					c, err = b.readByte()
+					if err == io.EOF {
+						break Loop
+					}
+					if err != nil {
+						return nil, err
+					}
 					if c < '0' || c > '7' {
 						b.unreadByte()
 						break
@@ -285,13 +354,33 @@ Loop:
 func (b *buffer) readName() (token, error) {
 	tmp := b.tmp[:0]
 	for {
-		c := b.readByte()
+		c, err := b.readByte()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
 		if isDelim(c) || isSpace(c) {
 			b.unreadByte()
 			break
 		}
 		if c == '#' {
-			x := unhex(b.readByte())<<4 | unhex(b.readByte())
+			high, err := b.readByte()
+			if err == io.EOF {
+				return nil, fmt.Errorf("malformed name: %v", err)
+			}
+			if err != nil {
+				return nil, err
+			}
+			low, err := b.readByte()
+			if err == io.EOF {
+				return nil, fmt.Errorf("malformed name: %v", err)
+			}
+			if err != nil {
+				return nil, err
+			}
+			x := unhex(high)<<4 | unhex(low)
 			if x < 0 {
 				return nil, fmt.Errorf("malformed name")
 			}
@@ -307,7 +396,13 @@ func (b *buffer) readName() (token, error) {
 func (b *buffer) readKeyword() (token, error) {
 	tmp := b.tmp[:0]
 	for {
-		c := b.readByte()
+		c, err := b.readByte()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
 		if isDelim(c) || isSpace(c) {
 			b.unreadByte()
 			break
@@ -534,15 +629,26 @@ func (b *buffer) readDict() (object, error) {
 		return x, nil
 	}
 
-	switch b.readByte() {
-	case '\r':
-		if b.readByte() != '\n' {
-			b.unreadByte()
+	c, err := b.readByte()
+	if err != io.EOF {
+		if err != nil {
+			return nil, err
 		}
-	case '\n':
-		// ok
-	default:
-		return nil, fmt.Errorf("stream keyword not followed by newline")
+		switch c {
+		case '\r':
+			next, err := b.readByte()
+			if err == io.EOF {
+				// ignore missing newline at EOF
+			} else if err != nil {
+				return nil, err
+			} else if next != '\n' {
+				b.unreadByte()
+			}
+		case '\n':
+			// ok
+		default:
+			return nil, fmt.Errorf("stream keyword not followed by newline")
+		}
 	}
 
 	return stream{x, b.objptr, b.readOffset()}, nil
