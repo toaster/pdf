@@ -746,7 +746,7 @@ func (p Page) Content() (Content, error) {
 
 	var rect []Rect
 	var gstack []gstate
-	Interpret(strm, func(stk *Stack, op string) (bool, error) {
+	err = Interpret(strm, func(stk *Stack, op string) (bool, error) {
 		n := stk.Len()
 		args := make([]Value, n)
 		for i := n - 1; i >= 0; i-- {
@@ -944,6 +944,9 @@ func (p Page) Content() (Content, error) {
 		}
 		return true, nil
 	})
+	if err != nil {
+		return Content{}, err
+	}
 	return Content{text, rect}, nil
 }
 
