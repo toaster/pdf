@@ -70,7 +70,6 @@ import (
 	"encoding/ascii85"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"sort"
 	"strconv"
@@ -753,6 +752,23 @@ func (v Value) Index(i int) (Value, error) {
 	return v.r.resolve(v.ptr, x[i])
 }
 
+// Values returns all elements of the array or nil if v is not an array.
+func (v Value) Values() ([]Value, error) {
+	x, ok := v.data.(array)
+	if !ok {
+		return nil, nil
+	}
+	var values []Value
+	for _, o := range x {
+		value, err := v.r.resolve(v.ptr, o)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
 // Len returns the length of the array v.
 // If v.Kind() != Array, Len returns 0.
 func (v Value) Len() int {
@@ -882,7 +898,7 @@ func (e *errorReadCloser) Close() error {
 }
 
 // Reader returns the data contained in the stream v.
-func (v Value) Reader() (io.ReadCloser, error) {
+func (v Value) Reader() (io.Reader, error) {
 	x, ok := v.data.(stream)
 	if !ok {
 		return nil, errors.New("stream not present")
@@ -934,7 +950,40 @@ func (v Value) Reader() (io.ReadCloser, error) {
 		return nil, fmt.Errorf("unsupported filter %v", filter)
 	}
 
-	return ioutil.NopCloser(rd), nil
+	return rd, nil
+}
+
+// MultiReader returns a reader for an array of streams which should be treated like one.
+func MultiReader(vs []Value) (io.Reader, error) {
+	var rds []io.Reader
+	for _, v := range vs {
+		rd, err := v.Reader()
+		if err != nil {
+			return nil, err
+		}
+		rds = append(rds, rd)
+	}
+	return &multiReader{rds: rds}, nil
+}
+
+type multiReader struct {
+	rd  io.Reader
+	rds []io.Reader
+}
+
+func (m *multiReader) Read(p []byte) (n int, err error) {
+	if m.rd == nil {
+		if len(m.rds) == 0 {
+			return 0, io.EOF
+		}
+		m.rd = m.rds[0]
+		m.rds = m.rds[1:]
+	}
+	n, err = m.rd.Read(p)
+	if err == io.EOF {
+		m.rd = nil
+	}
+	return n, err
 }
 
 func applyFilter(rd io.Reader, name string, param Value) (io.Reader, error) {
