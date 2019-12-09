@@ -746,7 +746,7 @@ func (p Page) Content() (Content, error) {
 
 	var rect []Rect
 	var gstack []gstate
-	Interpret(strm, func(stk *Stack, op string) (bool, error) {
+	err = Interpret(strm, func(stk *Stack, op string) (bool, error) {
 		n := stk.Len()
 		args := make([]Value, n)
 		for i := n - 1; i >= 0; i-- {
@@ -785,13 +785,25 @@ func (p Page) Content() (Content, error) {
 				//fmt.Println("FONT", font)
 			}
 
+		case "c": // curveto
+		case "v": // curveto
+		case "y": // curveto
 		case "f": // fill
+		case "f*": // eofill
 		case "g": // setgray
 		case "l": // lineto
 		case "m": // moveto
+		case "h": // closepath
+		case "n": // end path
+		case "W": // clip
+		case "Do": // Invoke named XObject
 
 		case "cs": // set colorspace non-stroking
 		case "scn": // set color non-stroking
+
+		case "BDC": // Begin marked-content sequence with property list
+		case "BMC": // Begin marked-content sequence
+		case "EMC": // End marked-content sequence
 
 		case "re": // append rectangle to path
 			if len(args) != 4 {
@@ -940,10 +952,13 @@ func (p Page) Content() (Content, error) {
 			}
 			g.Th = args[0].Float64() / 100
 		default:
-			//fmt.Println(op, args)
+			// fmt.Println(op, args)
 		}
 		return true, nil
 	})
+	if err != nil {
+		return Content{}, err
+	}
 	return Content{text, rect}, nil
 }
 

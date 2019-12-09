@@ -56,10 +56,27 @@ func newDict() Value {
 // There is no support for executable blocks, among other limitations.
 //
 func Interpret(strm Value, do func(stk *Stack, op string) (bool, error)) error {
-	rd, err := strm.Reader()
-	if err != nil {
-		return err
+	var rd io.Reader
+	var err error
+	switch strm.data.(type) {
+	case stream:
+		rd, err = strm.Reader()
+		if err != nil {
+			return err
+		}
+	case array:
+		values, err := strm.Values()
+		if err != nil {
+			return err
+		}
+		rd, err = MultiReader(values)
+		if err != nil {
+			return err
+		}
+	default:
+		return errors.New("interpret: value is neither stream nor array")
 	}
+
 	b := newBuffer(rd, 0)
 	b.allowEOF = true
 	b.allowObjptr = false
