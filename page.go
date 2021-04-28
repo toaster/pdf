@@ -817,8 +817,10 @@ func (p Page) Content() (Content, error) {
 
 		case "Q": // restore graphics state
 			n := len(gstack) - 1
-			g = gstack[n]
-			gstack = gstack[:n]
+			if n >= 0 {
+				g = gstack[n]
+				gstack = gstack[:n]
+			}
 
 		case "BT": // begin text (reset text matrix and line matrix)
 			g.Tm = ident
