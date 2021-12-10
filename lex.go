@@ -266,7 +266,7 @@ func (b *buffer) readLiteralString() (token, error) {
 	tmp := b.tmp[:0]
 	depth := 1
 Loop:
-	for {
+	for !b.eof {
 		c, err := b.readByte()
 		if err == io.EOF {
 			break Loop
