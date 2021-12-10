@@ -1219,8 +1219,24 @@ func cryptKey(key []byte, useAES bool, ptr objptr) []byte {
 func decryptString(key []byte, useAES bool, ptr objptr, x string) (string, error) {
 	key = cryptKey(key, useAES, ptr)
 	if useAES {
-		return "", errors.New("AES not implemented")
+		s := []byte(x)
+		if len(s) < aes.BlockSize {
+			return "", errors.New("Encrypted text shorter than AES block size")
+		}
+
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return "", errors.Wrap(err, "failed to create AES ciper")
+		}
+
+		iv := s[:aes.BlockSize]
+		s = s[aes.BlockSize:]
+
+		cbc := cipher.NewCBCDecrypter(block, iv)
+		cbc.CryptBlocks(s, s)
+		return string(s), nil
 	}
+
 	c, _ := rc4.NewCipher(key)
 	data := []byte(x)
 	c.XORKeyStream(data, data)
@@ -1235,10 +1251,11 @@ func decryptStream(key []byte, useAES bool, ptr objptr, rd io.Reader) (io.Reader
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create AES ciper")
 		}
-		iv := make([]byte, 16)
+
+		iv := make([]byte, aes.BlockSize)
 		io.ReadFull(rd, iv)
 		cbc := cipher.NewCBCDecrypter(cb, iv)
-		rd = &cbcReader{cbc: cbc, rd: rd, buf: make([]byte, 16)}
+		rd = &cbcReader{cbc: cbc, rd: rd, buf: make([]byte, aes.BlockSize)}
 	} else {
 		c, _ := rc4.NewCipher(key)
 		rd = &cipher.StreamReader{S: c, R: rd}
