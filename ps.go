@@ -141,7 +141,10 @@ Reading:
 				val := stk.Pop()
 				key, ok := stk.Pop().data.(name)
 				if !ok {
-					return errors.New("def of non-name")
+					// return errors.New("def of non-name")
+					// TODO: Examine what’s wrong with the `testdata/buggy-pdf-v1.6.pdf` and implement a proper fix.
+					fmt.Println("warn: def of non-name")
+					continue
 				}
 				dicts[len(dicts)-1][key] = val.data
 				continue
